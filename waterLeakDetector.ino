@@ -9,23 +9,33 @@
 #include <WiFiUdp.h>            // Required for OTA
 #include <ArduinoOTA.h>         // Required for OTA
 
-const char auth[] = "fromBlynkApp";
-char ssid[] = "ssid";
-char pass[] = "pw";
+#include <PubSubClient.h>       // Required for MQTT
+#include <ESP8266WiFi.h>
+
+const char* auth = "fromBlynkApp";
+const char* ssid = "ssid";
+const char* pass = "pw";
+const char* mqtt_server = "server";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+char msg[50];
 
 SimpleTimer timer;
 
-WidgetTerminal terminal(V26);
+WidgetTerminal terminal(V101);
 WidgetRTC rtc;
 
-bool alarmFlag = 0;
+bool alarmFlag = 0;         // Holds terminal notification until rtc is set. Text notification doesn't wait.
 String currentTimeDate;
-bool flag1, flag2;
+bool flag1, flag2;          // 60s and 5m notification lab
 
 void setup()
 {
   Serial.begin(9600);
   Blynk.begin(auth, ssid, pass);
+
+  client.setServer(mqtt_server, 1883);
 
   //WiFi.softAPdisconnect(true); // Per https://github.com/esp8266/Arduino/issues/676 this turns off AP
 
@@ -34,7 +44,7 @@ void setup()
   }
 
   // START OTA ROUTINE
-  ArduinoOTA.setHostname("LeakDetect-GuestBath");
+  ArduinoOTA.setHostname("LeakDetect-KitchenSink");
 
   ArduinoOTA.onStart([]() {
     Serial.println("Start");
@@ -63,9 +73,10 @@ void setup()
 
   rtc.begin();
 
-  timer.setInterval(1000L, pushAlarm);            // Temperature sensor reporting to app display
+  timer.setInterval(2000L, setTimeDate);
+  timer.setTimeout(1000, mqttPub);
 
-  Blynk.notify("Water detected guest bath/laundry room!");
+  Blynk.notify("Water detected under kitchen sink!");
 }
 
 void loop()
@@ -74,21 +85,34 @@ void loop()
   timer.run();
   ArduinoOTA.handle();
 
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
   if (millis() > 60000 && flag1 == 0)
   {
-    Blynk.notify("After 60 seconds, water still guest bath/laundry room!");
+    Blynk.notify("After 60 seconds, water still under kitchen sink!");
+    terminal.println(" ");
+    terminal.println(String(currentTimeDate) + ": After 60 seconds, water still under kitchen sink!");
+    terminal.println(" ");
+    terminal.flush();
     flag1 = 1;
   }
 
-  
+
   if (millis() > 300000 && flag2 == 0)
   {
-    Blynk.notify("After 5 minutes, water still in guest bath/laundry room!");
+    Blynk.notify("After 5 minutes, water still in Master Bathroom!");
+    terminal.println(" ");
+    terminal.println(String(currentTimeDate) + ": After 5 minutes, water still under kitchen sink!");
+    terminal.println(" ");
+    terminal.flush();
     flag2 = 1;
   }
 }
 
-void pushAlarm() {
+void setTimeDate() {
   if (alarmFlag == 0 && year() != 1970) {
     alarmFlag = 1;
     // Below gives me leading zeros on minutes and AM/PM.
@@ -112,8 +136,36 @@ void pushAlarm() {
 void terminalAlarm() {
   if (alarmFlag == 1) {
     terminal.println(" ");
-    terminal.println(String(currentTimeDate) + ": Water detected in guest bath/laundry room!");
+    terminal.println(String(currentTimeDate) + ": Water detected under kitchen sink!");
     terminal.println(" ");
     terminal.flush();
+  }
+}
+
+void mqttPub() {
+  String mailNotify = String("true");
+  mailNotify.toCharArray(msg, 50);
+  client.publish("house/leaks/kitchen/sink", msg);
+  Serial.println("MQTT msg sent");
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("ESP8266Client")) {
+      Serial.println("connected");
+      // Once connected, publish an announcement...
+      client.publish("outTopic", "hello world");
+      // ... and resubscribe
+      client.subscribe("inTopic");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
   }
 }
